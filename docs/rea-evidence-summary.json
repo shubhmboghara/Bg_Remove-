@@ -1,0 +1,28 @@
+{
+  "tool": "rea-agents 6.8.0",
+  "node": "24.22.1",
+  "evidence_id": "ev_02b8dfc26a822ffb8af056f3c1e1a6f7c23febabf938e0af9853e2196b530f8a",
+  "authority": "shipped-artifact",
+  "confidence": "derived",
+  "limitations": [
+    "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+    "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+    "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+    "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+    "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+    "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+  ],
+  "artifacts": [
+    {
+      "file": "layout.js",
+      "sha256": "f384d27402fc6d167ff97594ad7904d0c5de1d0d13ef9a597d944c4c4b3bb4e7",
+      "bytes": 3276
+    },
+    {
+      "file": "index.js",
+      "sha256": "9d065a79050e65ce6a5bc725e08a3e551f3def660e694d632eae404e5ff8ab95",
+      "bytes": 48
+    }
+  ],
+  "graph_nodes": 39
+}
