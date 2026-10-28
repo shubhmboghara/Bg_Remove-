@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: clearcut-studio
+    runtime: python
+    plan: standard
+    buildCommand: python -m venv .venv && .venv/bin/python -m pip install -r requirements.lock
+    startCommand: bash scripts/start-render.sh
+    healthCheckPath: /
+    disk:
+      name: clearcut-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.14
+      - key: DATA_DIR
+        value: /var/data/clearcut
+      - key: U2NET_HOME
+        value: /var/data/clearcut/models
+      - key: OMP_NUM_THREADS
+        value: "2"
+      - key: APP_ACCESS_TOKEN
+        sync: false

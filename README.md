@@ -2,6 +2,14 @@
 
 A working, single-workspace background-removal website with an original responsive interface and durable batch queue. Built in the `Bg_Remove-` repository using FastAPI, SQLite, Pillow and rembg's IS-Net model. Inference runs on this server; it does not call a paid image API.
 
+## Get a working public URL
+
+[Deploy Clearcut to Render](https://render.com/deploy?repo=https://github.com/shubhmboghara/Bg_Remove-)
+
+Sign in to Render, review the Blueprint and supply `APP_ACCESS_TOKEN` with a private access key you choose. The Blueprint requests a **paid Standard web service and a paid 10 GB persistent disk**; review Render's displayed price before creating it. After deployment succeeds, open the service's assigned `onrender.com` URL and enter your access key. That URL runs both the website and the background-removal backend. Do not share the key publicly.
+
+The server downloads and verifies its model on its first startup and retains it on the disk. Initial startup takes longer than later starts. This configuration is for trying the single-user app, not validated 10,000-image production capacity. Ten GB may hold only a fraction of a large collection; delete test batches when done. Hosting-account authorization and deployment are required before a live URL exists. No Render deployment has been performed or verified by the agent.
+
 ## Run
 
 Requires Python 3.12 and Linux. From this repository:
