@@ -14,7 +14,8 @@ import app
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app, 'DATA', tmp_path)
     monkeypatch.setattr(app, 'TOKEN', '')
-    def fake_remove(source, target):
+    monkeypatch.setattr(app, 'detail_available', lambda: True)
+    def fake_remove(source, target, quality='detailed'):
         with Image.open(source) as img:
             img.putalpha(100)
             img.save(target)
@@ -158,3 +159,64 @@ def test_zip_parts_and_delete(client):
     assert client.delete(f'/api/batches/{bid}').status_code == 200
     assert not (app.DATA / bid).exists()
     assert client.get(f'/api/batches/{bid}').status_code == 404
+
+
+def test_quality_selection_persists(client):
+    detailed = client.post('/api/batches', json={'name': 'Detailed'}).json()
+    assert detailed['quality'] == 'detailed'
+    fast = client.post('/api/batches', json={'quality': 'fast'}).json()
+    assert client.get(f"/api/batches/{fast['id']}").json()['quality'] == 'fast'
+    assert client.post('/api/batches', json={'quality': 'unknown'}).status_code == 400
+    assert client.post('/api/batches', json={'quality': []}).status_code == 400
+
+
+def test_detail_pipeline_preserves_alpha_and_switches_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, 'detail_available', lambda: True)
+    import sys
+    from types import SimpleNamespace
+    created, calls = [], []
+    def new_session(model, **kwargs):
+        created.append(model)
+        return model
+    def remove(image, **kwargs):
+        assert image.mode == 'RGB'
+        calls.append(kwargs)
+        out = image.convert('RGBA')
+        out.putalpha(200)
+        return out
+    monkeypatch.setitem(sys.modules, 'rembg', SimpleNamespace(new_session=new_session, remove=remove))
+    monkeypatch.setattr(app, 'session', None)
+    monkeypatch.setattr(app, 'session_model', None)
+    original = Image.new('RGBA', (3, 1), (20, 40, 60, 255))
+    original.putalpha(Image.frombytes('L', (3, 1), bytes([0, 100, 255])))
+    source, target = tmp_path / 'source.png', tmp_path / 'result.png'
+    original.save(source)
+    app.remove_background(source, target, 'detailed')
+    with Image.open(target) as result:
+        assert list(result.getchannel('A').tobytes()) == [0, 100, 200]
+        assert result.size == original.size
+    app.remove_background(source, target, 'detailed')
+    app.remove_background(source, target, 'fast')
+    assert created == [app.DETAIL_MODEL, app.MODEL]
+    assert calls[0]['decontaminate'] is True
+    assert calls[0]['post_process_mask'] is False
+    assert calls[-1]['decontaminate'] is False
+
+
+def test_existing_batches_keep_fast_quality_during_migration(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(app, 'DATA', tmp_path)
+    with sqlite3.connect(tmp_path / 'queue.sqlite3') as c:
+        c.execute("CREATE TABLE batches(id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'draft', created REAL NOT NULL)")
+        c.execute("INSERT INTO batches VALUES('old','Existing','draft',1)")
+    app.initialize()
+    app.initialize()
+    with app.db() as c:
+        assert c.execute("SELECT quality FROM batches WHERE id='old'").fetchone()[0] == 'fast'
+
+
+def test_small_server_rejects_detail_and_defaults_to_fast(client, monkeypatch):
+    monkeypatch.setattr(app, 'detail_available', lambda: False)
+    assert client.get('/api/status').json()['detail_available'] is False
+    assert client.post('/api/batches', json={'quality':'detailed'}).status_code == 422
+    assert client.post('/api/batches', json={}).json()['quality'] == 'fast'

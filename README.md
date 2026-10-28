@@ -1,6 +1,6 @@
 # Clearcut
 
-A working, single-workspace background-removal website with an original responsive interface and durable batch queue. Built in the `Bg_Remove-` repository using FastAPI, SQLite, Pillow and rembg's IS-Net model. Inference runs on this server; it does not call a paid image API.
+A working, single-workspace background-removal website with an original responsive interface and durable batch queue. Built in the `Bg_Remove-` repository using FastAPI, SQLite, Pillow and rembg's BiRefNet and IS-Net models. Inference runs on this server; it does not call a paid image API.
 
 ## Standalone design preview
 
@@ -25,11 +25,11 @@ bash scripts/start.sh
 
 The server listens on loopback port 8000. Open it through your development environment's supported access mechanism. No public hosting is configured. Run just one server process: an exclusive data-directory lock prevents competing workers.
 
-The setup script installs the locked dependencies and downloads the model through rembg with its checksum verification enabled. Initial setup needs access to PyPI, GitHub release assets and their redirect hosts. Later processing uses the retained model and needs no image-processing service or API key. The model is approximately 179 MB.
+The setup script installs the locked dependencies and downloads the model through rembg with its checksum verification enabled. Initial setup needs access to PyPI, GitHub release assets and their redirect hosts. Later processing uses the retained model and needs no image-processing service or API key. Fast mode uses an approximately 179 MB model; Fine detail adds an approximately 973 MB model.
 
 ## Use
 
-1. Upload JPG, PNG or WebP files, or select a folder. Keep the page open during uploads.
+1. Choose **Fine detail** or **Fast**, then upload JPG, PNG or WebP files, or select a folder. Keep the page open during uploads.
 2. Click **Remove backgrounds**. Three uploads can be in flight; inference processes one image at a time on CPU.
 3. Follow progress, pause after the active image, or retry failed images. Closing the page does not stop the server queue. Restarting the server requeues interrupted processing.
 4. Download individual transparent PNGs, or ZIP parts after the batch finishes. ZIP parts contain up to 250 images, preserve unique filenames and are assembled on disk rather than in memory.
@@ -39,6 +39,16 @@ Limits: 10,000 images per batch, 25 MB and 25 megapixels per image. Input and ou
 
 Uploaded images, results and the SQLite queue are retained under `.data/` until a batch is deleted. Model files remain cached. Keep `.data/` on persistent storage and back it up with the server stopped. If a browser upload is interrupted, already accepted images remain in a draft batch; unuploaded files must be selected again in a new batch. Archive uploads are not implemented; folder and multi-file uploads are supported.
 
+## Fine-detail background removal
+
+On servers with at least 12 GiB allocated RAM, new batches default to **Fine detail**: BiRefNet-General (1024×1024 inference) with foreground color decontamination to reduce edge fringing. Soft alpha is retained; we do not apply binary-mask smoothing, erosion or sharpening. Full output dimensions and existing input transparency are preserved. Previously created batches retain Fast mode. Select the mode before uploading; it is saved with the batch.
+
+**Fast** retains IS-Net for shorter processing times. On smaller servers, Fine detail is disabled and Fast is the default. The existing Render Standard blueprint is suitable only for Fast mode; Fine detail needs a larger machine (16 GiB recommended). No hosting plan or charge is automatically upgraded.
+
+A real 512×512 astronaut photo was processed in both modes: approximately 3.31 seconds Fast versus 28.85 seconds Fine detail, including model initialization, on this development machine. The process peaked at 9,391 MiB RSS during Fine detail. Those figures are one-image observations, not a production or quality benchmark. A visual comparison showed retained fine hair and suit detail, but no labeled-ground-truth accuracy score was measured. Neither model guarantees perfect removal of glass, shadows or every background. There is no universally best model for all images.
+
+The detailed model is downloaded with rembg's checksum validation. Setup preloads it only on sufficiently large machines. Tests cover quality selection, low-memory fallback, preservation of partial/zero alpha, model switching, and an idempotent migration of existing batches, as well as the earlier queue and ZIP tests. Large-batch inference remains unbenchmarked.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -46,6 +56,7 @@ Uploaded images, results and the SQLite queue are retained under `.data/` until 
 | `DATA_DIR` | `.data` beside `app.py` | Persistent queue and images |
 | `U2NET_HOME` | `<DATA_DIR>/models` | Model cache |
 | `REMBG_MODEL` | `isnet-general-use` | rembg model; alternatives require their own download and validation |
+| `REMBG_DETAIL_MODEL` | `birefnet-general` | Fine-detail model; custom replacements need independent validation |
 | `OMP_NUM_THREADS` | `2` | Bounds inference CPU parallelism |
 | `PORT` | `8000` | Development server port |
 | `APP_ACCESS_TOKEN` | unset | Optional workspace access key; enter it in the UI when configured |
@@ -62,7 +73,7 @@ node --check static/app.js
 curl --fail http://127.0.0.1:8000/api/status
 ```
 
-The eight API tests use an explicit deterministic inference substitute to exercise queue behavior: upload validation, duplicate output names, retries, model failure pausing, restart recovery, workspace authentication/origin checks, 10,000-row pagination/limits, and 250-image ZIP boundaries/deletion. They do not claim model-quality coverage.
+The twelve API tests use an explicit deterministic inference substitute to exercise queue behavior: upload validation, duplicate output names, retries, model failure pausing, restart recovery, workspace authentication/origin checks, 10,000-row pagination/limits, and 250-image ZIP boundaries/deletion. They do not claim model-quality coverage.
 
 Separately verified during development with a real IS-Net inference on scikit-image's bundled astronaut photo: browser upload → queue → transparent PNG → ZIP download → history after reload. Output was 512×512 RGBA with 119,885 near-transparent pixels and 138,339 near-opaque pixels. Desktop and 390px mobile browser checks reported no JavaScript errors or horizontal overflow. The check initially required too many pixels with alpha exactly 255; IS-Net produces near-opaque pixels, so verification checks foreground alpha ≥230 and background alpha <20 instead.
 

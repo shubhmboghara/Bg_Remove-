@@ -25,6 +25,10 @@ async function refresh() {
     }));
     if (selected) await refreshDetail();
     const state = await api('/status');
+    const detailOption = $('qualityMode').querySelector('[value="detailed"]');
+    detailOption.disabled = !state.detail_available;
+    detailOption.textContent = state.detail_available ? 'Fine detail — cleaner soft edges' : 'Fine detail — needs a larger server';
+    if (!state.detail_available) $('qualityMode').value = 'fast';
     $('engineLabel').textContent = state.engine.state === 'loading' ? 'Loading AI model…' : state.engine.state === 'error' ? 'Model needs attention' : 'Local processing';
     if (state.engine.state === 'error') $('engineLabel').title = state.engine.error;
   } catch (err) { if (!$('loginDialog').open) toast(err.message); }
@@ -38,7 +42,7 @@ async function refreshDetail() {
   $('batchDetail').hidden = false;
   $('detailTitle').textContent = batch.name;
   const c = batch.counts;
-  $('detailStatus').textContent = `${c.done.toLocaleString()} of ${batch.total.toLocaleString()} ready · ${c.queued} queued · ${c.processing} processing · ${c.failed} failed · ${batch.state}`;
+  $('detailStatus').textContent = `${batch.quality === 'detailed' ? 'Fine detail' : 'Fast'} · ${c.done.toLocaleString()} of ${batch.total.toLocaleString()} ready · ${c.queued} queued · ${c.processing} processing · ${c.failed} failed · ${batch.state}`;
   $('progressFill').style.width = `${batch.total ? (c.done + c.failed) / batch.total * 100 : 0}%`;
   $('pauseButton').hidden = batch.state !== 'running';
   $('deleteButton').disabled = uploading || batch.state === 'running' || c.processing > 0;
@@ -72,7 +76,7 @@ async function uploadFiles(fileList) {
   uploading = true; $('chooseFiles').disabled = true; $('chooseFolder').disabled = true;
   let uploaded = 0, failed = 0, next = 0, lastError = '';
   try {
-    const batch = await post('/batches', { name: `Collection · ${new Date().toLocaleDateString(undefined, {month:'short',day:'numeric'})} · ${new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}` });
+    const batch = await post('/batches', { quality: $('qualityMode').value, name: `Collection · ${new Date().toLocaleDateString(undefined, {month:'short',day:'numeric'})} · ${new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}` });
     await selectBatch(batch.id);
     const uploadOne = async () => {
       while (next < files.length) {

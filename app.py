@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageOps, UnidentifiedImageError
 from starlette.background import BackgroundTask
 
 ROOT = Path(__file__).parent
@@ -25,13 +25,37 @@ DATA.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault('U2NET_HOME', str(DATA / 'models'))
 os.environ.setdefault('OMP_NUM_THREADS', '2')
 MODEL = os.getenv('REMBG_MODEL', 'isnet-general-use')
+DETAIL_MODEL = os.getenv('REMBG_DETAIL_MODEL', 'birefnet-general')
+QUALITY_MODES = {'detailed': DETAIL_MODEL, 'fast': MODEL}
 MAX_FILES = 10_000
 MAX_BYTES = 25 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 25_000_000
 TOKEN = os.getenv('APP_ACCESS_TOKEN', '')
 stop = threading.Event()
 session = None
+session_model = None
 engine = {'state': 'idle', 'model': MODEL, 'error': None}
+
+
+class DetailMemoryError(RuntimeError):
+    pass
+
+
+def detail_available():
+    """Use the container allocation, not the host's advertised RAM alone."""
+    limits = []
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            if line.startswith('MemTotal:'):
+                limits.append(int(line.split()[1]) * 1024)
+        for path in ('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+            if Path(path).exists():
+                value = Path(path).read_text().strip()
+                if value.isdigit():
+                    limits.append(int(value))
+    except (OSError, ValueError):
+        return False
+    return bool(limits) and min(limits) >= 12 * 1024**3
 
 
 def db():
@@ -54,25 +78,47 @@ def initialize():
           error TEXT, created REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS images_batch ON images(batch_id, state);
         ''')
+        columns = {row['name'] for row in c.execute('PRAGMA table_info(batches)')}
+        if 'quality' not in columns:
+            # Existing batches keep their original model; new batches default to detailed.
+            c.execute("ALTER TABLE batches ADD COLUMN quality TEXT NOT NULL DEFAULT 'fast'")
         c.execute("UPDATE images SET state='queued' WHERE state='processing'")
 
 
-def remove_background(source, target):
-    global session
+def remove_background(source, target, quality='detailed'):
+    global session, session_model
     from rembg import new_session, remove
-    if session is None:
-        engine.update(state='loading', error=None)
-        session = new_session(MODEL, providers=['CPUExecutionProvider'])
-    engine.update(state='ready', error=None)
+    if quality == 'detailed' and not detail_available():
+        raise DetailMemoryError('Fine detail needs at least 12 GiB allocated RAM; use Fast on this server.')
+    model = QUALITY_MODES[quality]
+    if session is None or session_model != model:
+        # Keep just one model resident, even when batches use different settings.
+        session = None
+        session_model = None
+        import gc
+        gc.collect()
+        engine.update(state='loading', model=model, error=None)
+        session = new_session(model, providers=['CPUExecutionProvider'])
+        session_model = model
+    engine.update(state='ready', model=model, error=None)
     with Image.open(source) as image:
-        result = remove(image, session=session)
+        original = ImageOps.exif_transpose(image).convert('RGBA')
+        # Estimate soft coverage and foreground colour, without binary-mask erosion
+        # or sharpening that would discard hair and thin structures.
+        result = remove(original.convert('RGB'), session=session,
+                        decontaminate=quality == 'detailed',
+                        post_process_mask=False).convert('RGBA')
+        if result.size != original.size:
+            raise ValueError('Model returned unexpected output dimensions')
+        # Never turn originally transparent pixels opaque or double-multiply alpha.
+        result.putalpha(ImageChops.darker(result.getchannel('A'), original.getchannel('A')))
         result.save(target, format='PNG')
 
 
 def worker():
     while not stop.is_set():
         with contextlib.closing(db()) as c, c:
-            row = c.execute("SELECT i.* FROM images i JOIN batches b ON b.id=i.batch_id WHERE i.state='queued' AND b.state='running' ORDER BY i.created LIMIT 1").fetchone()
+            row = c.execute("SELECT i.*, b.quality FROM images i JOIN batches b ON b.id=i.batch_id WHERE i.state='queued' AND b.state='running' ORDER BY i.created LIMIT 1").fetchone()
             if row:
                 c.execute("UPDATE images SET state='processing', error=NULL WHERE id=?", (row['id'],))
         if not row:
@@ -80,13 +126,13 @@ def worker():
             continue
         folder = DATA / row['batch_id']
         try:
-            remove_background(folder / (row['id'] + '.input.png'), folder / (row['id'] + '.png'))
+            remove_background(folder / (row['id'] + '.input.png'), folder / (row['id'] + '.png'), row['quality'])
             state, error = 'done', None
         except Exception as exc:
             state, error = 'failed', 'Processing failed. Check the server log, then retry.'
             print(f"Image {row['id']} failed: {exc}", flush=True)
-            if session is None:
-                engine.update(state='error', error='Model could not load. Check model download and server logs.')
+            if session is None or isinstance(exc, DetailMemoryError):
+                engine.update(state='error', error=str(exc) if isinstance(exc, DetailMemoryError) else 'Model could not load. Check model download and server logs.')
                 # A missing model should not fail thousands of queued images.
                 with contextlib.closing(db()) as c, c:
                     c.execute("UPDATE batches SET state='paused' WHERE id=?", (row['batch_id'],))
@@ -171,7 +217,7 @@ def summary(c, row):
 @app.get('/api/status')
 def status():
     import shutil
-    return {'engine': engine, 'max_files': MAX_FILES, 'max_file_mb': 25, 'free_bytes': shutil.disk_usage(DATA).free}
+    return {'engine': engine, 'max_files': MAX_FILES, 'max_file_mb': 25, 'free_bytes': shutil.disk_usage(DATA).free, 'detail_available': detail_available()}
 
 
 @app.get('/api/batches')
@@ -184,11 +230,16 @@ def batches():
 async def create_batch(request: Request):
     body = await request.json()
     name = str(body.get('name', 'Untitled batch')).strip()[:100] or 'Untitled batch'
+    quality = body.get('quality', 'detailed' if detail_available() else 'fast')
+    if not isinstance(quality, str) or quality not in QUALITY_MODES:
+        raise HTTPException(400, 'Choose detailed or fast quality')
+    if quality == 'detailed' and not detail_available():
+        raise HTTPException(422, 'Fine detail requires at least 12 GiB allocated RAM. Select Fast on this server.')
     batch_id = uuid.uuid4().hex
     with contextlib.closing(db()) as c, c:
-        c.execute('INSERT INTO batches(id,name,created) VALUES (?,?,?)', (batch_id, name, time.time()))
+        c.execute('INSERT INTO batches(id,name,created,quality) VALUES (?,?,?,?)', (batch_id, name, time.time(), quality))
     (DATA / batch_id).mkdir()
-    return {'id': batch_id, 'name': name}
+    return {'id': batch_id, 'name': name, 'quality': quality}
 
 
 @app.get('/api/batches/{batch_id}')
