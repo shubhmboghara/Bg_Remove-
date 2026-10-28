@@ -2,6 +2,10 @@
 
 A working, single-workspace background-removal website with an original responsive interface and durable batch queue. Built in the `Bg_Remove-` repository using FastAPI, SQLite, Pillow and rembg's IS-Net model. Inference runs on this server; it does not call a paid image API.
 
+## Standalone design preview
+
+Download [preview.html](preview.html) and open it in your browser to explore the layout, comparison slider and local image selection without hosting. This file does **not** remove backgrounds. To process images, run the full app using the instructions below.
+
 ## Get a working public URL
 
 [Deploy Clearcut to Render](https://render.com/deploy?repo=https://github.com/shubhmboghara/Bg_Remove-)
